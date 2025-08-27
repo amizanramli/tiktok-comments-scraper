@@ -13,7 +13,7 @@ st.title("TikTok Comments Scraper")
 AWEME_ID = st.text_input("Enter TikTok Video ID:", "7477926434300841224")
 
 # User input for number of pages
-num_pages = st.number_input("Enter the number of pages to scrape:", min_value=1, max_value=500, value=10, step=1)
+num_pages = st.number_input("Enter the number of pages to scrape:", min_value=1, max_value=5000, value=10, step=1)
 
 # Button to start fetching
 if st.button("Fetch Comments"):
@@ -70,3 +70,4 @@ if st.button("Fetch Comments"):
     df = pd.DataFrame(all_comments)
     st.write(df)
     st.success(f"Scraping complete! {len(all_comments)} comments fetched.")
+
