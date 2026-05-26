@@ -68,14 +68,39 @@ h1,h2,h3 { color:#1a1a2e !important; }
     border-radius:8px !important; color:#fff !important; font-weight:600 !important;
 }
 .stButton > button[kind="primary"]:hover { background:#c73652 !important; }
+.stButton > button[kind="secondary"] {
+    background:#fff !important; border:1.5px solid #6b7280 !important;
+    border-radius:8px !important; color:#6b7280 !important; font-weight:600 !important;
+}
+.stButton > button[kind="secondary"]:hover {
+    background:#6b7280 !important; color:#fff !important; }
 [data-testid="stTabs"] button { color:#6b7280 !important; font-weight:500; }
 [data-testid="stTabs"] button[aria-selected="true"] {
     color:#e94560 !important; border-bottom-color:#e94560 !important; }
 .stProgress > div > div { background-color:#e94560 !important; }
+.stopped-banner {
+    background:#fff3cd; border:1.5px solid #ffc107; border-radius:8px;
+    padding:10px 16px; color:#856404; font-weight:500; margin:8px 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
 BASE_URL = "https://api.tikhub.io"
+
+
+# ── Session state init ─────────────────────────────────────────────────────────
+if "stop_requested" not in st.session_state:
+    st.session_state.stop_requested = False
+if "is_running" not in st.session_state:
+    st.session_state.is_running = False
+
+
+def request_stop():
+    st.session_state.stop_requested = True
+
+
+def is_stopped() -> bool:
+    return st.session_state.get("stop_requested", False)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -165,8 +190,13 @@ def fetch_video_metadata(video_id: str, headers: dict) -> dict:
 # ── Fetch comments (paginated) ─────────────────────────────────────────────────
 def fetch_comments(video_id: str, target: int, headers: dict,
                    progress_cb=None) -> list:
+    """Returns whatever comments were collected before a stop/error."""
     comments, cursor = [], 0
     while len(comments) < target:
+        # ── stop check ──
+        if is_stopped():
+            break
+
         count  = min(20, target - len(comments))
         params = {"aweme_id": video_id, "cursor": cursor,
                   "count": count, "current_region": ""}
@@ -174,38 +204,47 @@ def fetch_comments(video_id: str, target: int, headers: dict,
             r = requests.get(f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment",
                              headers=headers, params=params, timeout=30)
         except Exception as e:
-            st.error(f"Request error: {e}"); break
+            st.warning(f"⚠️ Request error while fetching comments: {e}. Keeping {len(comments)} so far.")
+            break
+
         if r.status_code == 401:
-            st.error("❌ Invalid API key (401)."); break
+            st.error("❌ Invalid API key (401).")
+            request_stop()
+            break
         if r.status_code != 200:
-            st.error(f"API error {r.status_code}: {r.text[:200]}"); break
+            st.warning(f"⚠️ API error {r.status_code} while fetching comments. Keeping {len(comments)} so far.")
+            break
+
         data  = r.json().get("data") or {}
         batch = data.get("comments") or []
-        if not batch: break
+        if not batch:
+            break
         comments.extend(batch)
         cursor   = data.get("cursor", cursor + count)
         has_more = data.get("has_more", len(batch) == count)
         if progress_cb:
             progress_cb(min(len(comments) / target, 0.95))
-        if not has_more: break
-        if len(comments) < target: time.sleep(0.3)
+        if not has_more:
+            break
+        if len(comments) < target:
+            time.sleep(0.3)
+
     return comments[:target]
 
 
 # ── Fetch replies — strictly per the API spec ──────────────────────────────────
-# Endpoint : GET /api/v1/tiktok/web/fetch_post_comment_reply
-# Required : item_id  (the VIDEO id, NOT aweme_id)
-#            comment_id (the parent comment's cid)
-# Optional : cursor, count, current_region
 def fetch_replies_for_comment(item_id: str, comment_id: str,
                                headers: dict) -> list:
-    """Paginate through ALL replies for one comment."""
+    """Paginate through replies for one comment; stops early on stop/error."""
     all_replies = []
     cursor      = 0
 
     while True:
+        if is_stopped():
+            break
+
         params = {
-            "item_id":        item_id,    # ← spec says item_id
+            "item_id":        item_id,
             "comment_id":     comment_id,
             "cursor":         cursor,
             "count":          20,
@@ -240,7 +279,8 @@ def fetch_replies_for_comment(item_id: str, comment_id: str,
 
 def fetch_all_replies(item_id: str, parsed_comments: list,
                       headers: dict, progress_cb=None) -> None:
-    """Attach replies list to every comment that has reply_count > 0."""
+    """Attach replies to every comment that has reply_count > 0.
+    Stops early if stop is requested; keeps whatever was already fetched."""
     eligible = [c for c in parsed_comments
                 if c["reply_count"] > 0 and c["comment_id"]]
     total    = len(eligible)
@@ -251,7 +291,13 @@ def fetch_all_replies(item_id: str, parsed_comments: list,
         st.warning(f"⚠️ {len(no_id)} comment(s) have replies but no ID — skipped.")
 
     for i, c in enumerate(eligible):
-        c["replies"] = fetch_replies_for_comment(item_id, c["comment_id"], headers)
+        if is_stopped():
+            break
+        try:
+            c["replies"] = fetch_replies_for_comment(item_id, c["comment_id"], headers)
+        except Exception as e:
+            st.warning(f"⚠️ Error fetching replies for comment {c['comment_id']}: {e}. Skipping.")
+            c["replies"] = []
         if progress_cb and total > 0:
             progress_cb((i + 1) / total)
         time.sleep(0.25)
@@ -260,7 +306,6 @@ def fetch_all_replies(item_id: str, parsed_comments: list,
 # ── Parse raw comment dict ─────────────────────────────────────────────────────
 def parse_comment(raw: dict, video_id: str) -> dict:
     user = raw.get("user") or {}
-    # cid is the canonical comment ID field in TikTok Web API responses
     cid  = str(raw.get("cid") or raw.get("comment_id") or raw.get("id") or "").strip()
     return {
         "video_id":    video_id,
@@ -275,7 +320,6 @@ def parse_comment(raw: dict, video_id: str) -> dict:
 
 
 def parse_reply(raw: dict) -> dict:
-    """Parse a raw reply dict into a flat dict."""
     user = raw.get("user") or {}
     return {
         "username": user.get("unique_id") or user.get("nickname") or "",
@@ -333,14 +377,13 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
         ["#","Video ID","Type","Parent Username","Username","Text","Likes","Posted At"],
         [5, 22,         12,    22,               22,        65,    10,     18])
 
-    row_num = 0
+    row_num  = 0
     xlsx_row = 2
 
     for c in all_parsed:
         row_num += 1
         fill = alt_fill if row_num % 2 == 0 else None
 
-        # Comment row
         vals = [row_num, c["video_id"], "Comment", "",
                 c["username"], c["text"], c["likes"], c["created_at"]]
         for ci, val in enumerate(vals, 1):
@@ -351,7 +394,6 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
         ws1.row_dimensions[xlsx_row].height = 42
         xlsx_row += 1
 
-        # Reply rows — one per reply, flat
         for rep_raw in c.get("replies") or []:
             row_num += 1
             rep = parse_reply(rep_raw)
@@ -389,6 +431,32 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
     return buf.getvalue()
 
 
+# ── Helper: render export section ─────────────────────────────────────────────
+def render_export(all_parsed: list, all_metadata: dict, ts_str: str,
+                  stopped: bool = False) -> None:
+    if not all_parsed:
+        return
+    st.markdown("---")
+    st.subheader("📤 Export")
+    if stopped:
+        st.markdown(
+            '<div class="stopped-banner">⚠️ Scraping was stopped early — '
+            'exporting whatever was collected so far.</div>',
+            unsafe_allow_html=True,
+        )
+    with st.spinner("Building XLSX…"):
+        xlsx_bytes = build_xlsx(all_parsed, all_metadata)
+    fname = f"tiktok_comments_{ts_str}.xlsx"
+    st.download_button(
+        label=f"⬇  Download XLSX — {len(all_parsed)} rows · 3 sheets",
+        data=xlsx_bytes,
+        file_name=fname,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    st.caption(f"`{fname}` · Video Metadata · Comments & Replies · Summary")
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  UI
 # ════════════════════════════════════════════════════════════════════════════════
@@ -417,14 +485,24 @@ with st.sidebar:
     keyword_filter = st.text_input("Keyword filter", placeholder="e.g. love")
 
     st.divider()
-    st.caption("v1.0.0 · [TikHub Docs](https://docs.tikhub.io)")
+    st.caption("v1.1.0 · [TikHub Docs](https://docs.tikhub.io)")
 
 st.subheader("📋 Video IDs / URLs")
 st.caption("One TikTok video ID or URL per line.")
 raw_input = st.text_area(label="videos", label_visibility="collapsed", height=140,
     placeholder="7611351401800748308\nhttps://www.tiktok.com/@user/video/123456789")
-run_btn = st.button("▶  Start Scraping", type="primary", use_container_width=True)
 
+# ── Start / Stop buttons ───────────────────────────────────────────────────────
+btn_col1, btn_col2 = st.columns([3, 1])
+with btn_col1:
+    run_btn = st.button("▶  Start Scraping", type="primary", use_container_width=True,
+                        disabled=st.session_state.is_running)
+with btn_col2:
+    stop_btn = st.button("⏹  Stop", type="secondary", use_container_width=True,
+                         disabled=not st.session_state.is_running,
+                         on_click=request_stop)
+
+# ── Main scraping logic ────────────────────────────────────────────────────────
 if run_btn:
     if not api_key:
         st.error("Enter your API key in the sidebar first."); st.stop()
@@ -432,26 +510,51 @@ if run_btn:
     if not lines:
         st.error("Enter at least one video ID or URL."); st.stop()
 
+    # Reset stop flag and mark running
+    st.session_state.stop_requested = False
+    st.session_state.is_running     = True
+
     headers:      dict = make_headers(api_key)
     all_parsed:   list = []
     all_metadata: dict = {}
     ts_str             = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stopped_early      = False
 
     for idx, line in enumerate(lines):
+        # ── outer stop check ──
+        if is_stopped():
+            stopped_early = True
+            st.markdown(
+                '<div class="stopped-banner">⏹ Stop requested — wrapping up…</div>',
+                unsafe_allow_html=True,
+            )
+            break
+
         st.markdown(f"---\n### 🎬 Video {idx+1} of {len(lines)}")
         st.code(line, language=None)
 
         # Resolve ID
         with st.spinner("Resolving video ID…"):
-            video_id = extract_video_id(line, headers)
+            try:
+                video_id = extract_video_id(line, headers)
+            except Exception as e:
+                st.warning(f"⚠️ Could not resolve video ID: {e}. Skipping.")
+                continue
+
         if not video_id:
-            st.error("Could not resolve a video ID."); continue
+            st.warning("⚠️ Could not resolve a video ID. Skipping.")
+            continue
         st.caption(f"Video ID: **{video_id}**")
 
         # Metadata
         with st.spinner("Fetching video metadata…"):
-            meta = fetch_video_metadata(video_id, headers)
+            try:
+                meta = fetch_video_metadata(video_id, headers)
+            except Exception as e:
+                st.warning(f"⚠️ Metadata fetch failed: {e}. Continuing without metadata.")
+                meta = {}
         all_metadata[video_id] = meta
+
         if meta:
             verified = " ✅" if meta.get("author_verified") else ""
             st.markdown(
@@ -482,12 +585,27 @@ if run_btn:
         else:
             st.info("Metadata unavailable for this video.")
 
+        # ── stop check before comments ──
+        if is_stopped():
+            stopped_early = True
+            break
+
         # Step 1 — comments
         st.markdown("**Step 1 of 2 — Fetching comments**")
         prog1 = st.progress(0.0)
-        raw   = fetch_comments(video_id, num_comments, headers,
-                               progress_cb=lambda p: prog1.progress(p))
-        prog1.progress(1.0, text=f"✅ {len(raw)} comments fetched")
+        try:
+            raw = fetch_comments(video_id, num_comments, headers,
+                                 progress_cb=lambda p: prog1.progress(p))
+        except Exception as e:
+            st.warning(f"⚠️ Comments fetch failed: {e}. Skipping this video.")
+            raw = []
+
+        prog1.progress(1.0, text=f"✅ {len(raw)} comments fetched"
+                       + (" (stopped early)" if is_stopped() else ""))
+
+        if is_stopped() and not raw:
+            stopped_early = True
+            break
 
         parsed = [parse_comment(c, video_id) for c in raw]
 
@@ -499,20 +617,34 @@ if run_btn:
             kw = keyword_filter.strip().lower()
             filtered = [c for c in filtered if kw in c["text"].lower()]
 
+        # ── stop check before replies ──
+        if is_stopped():
+            all_parsed.extend(filtered)
+            stopped_early = True
+            break
+
         # Step 2 — replies
         eligible = [c for c in filtered if c["reply_count"] > 0 and c["comment_id"]]
         if eligible:
             st.markdown(f"**Step 2 of 2 — Fetching replies** "
                         f"({len(eligible)} comment(s) have replies)")
             prog2 = st.progress(0.0)
-            fetch_all_replies(video_id, filtered, headers,
-                              progress_cb=lambda p: prog2.progress(p))
+            try:
+                fetch_all_replies(video_id, filtered, headers,
+                                  progress_cb=lambda p: prog2.progress(p))
+            except Exception as e:
+                st.warning(f"⚠️ Replies fetch failed: {e}. Keeping comments without replies.")
             total_replies = sum(len(c["replies"]) for c in filtered)
-            prog2.progress(1.0, text=f"✅ {total_replies} replies fetched")
+            prog2.progress(1.0, text=f"✅ {total_replies} replies fetched"
+                           + (" (stopped early)" if is_stopped() else ""))
         else:
             st.markdown("**Step 2 of 2 — No replies for these comments**")
 
         all_parsed.extend(filtered)
+
+        if is_stopped():
+            stopped_early = True
+            break
 
         # Metrics
         n           = max(len(filtered), 1)
@@ -590,18 +722,11 @@ if run_btn:
             else:
                 st.info("Not enough text to extract keywords.")
 
-    # Export
-    if all_parsed:
-        st.markdown("---")
-        st.subheader("📤 Export")
-        with st.spinner("Building XLSX…"):
-            xlsx_bytes = build_xlsx(all_parsed, all_metadata)
-        fname = f"tiktok_comments_{ts_str}.xlsx"
-        st.download_button(
-            label=f"⬇  Download XLSX — {len(all_parsed)} rows · 3 sheets",
-            data=xlsx_bytes,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-        st.caption(f"`{fname}` · Video Metadata · Comments & Replies · Summary")
+    # ── Done ──────────────────────────────────────────────────────────────────
+    st.session_state.is_running     = False
+    st.session_state.stop_requested = False
+
+    render_export(all_parsed, all_metadata, ts_str, stopped=stopped_early)
+
+    if stopped_early and not all_parsed:
+        st.info("No data collected before stopping.")
