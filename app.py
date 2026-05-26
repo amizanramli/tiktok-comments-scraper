@@ -12,19 +12,9 @@ from datetime import datetime
 from collections import Counter
 
 import pandas as pd
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from nltk.corpus import stopwords
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-# ── NLTK bootstrap ─────────────────────────────────────────────────────────────
-for _pkg in ["vader_lexicon", "stopwords", "punkt", "punkt_tab"]:
-    try:
-        nltk.download(_pkg, quiet=True)
-    except Exception:
-        pass
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -34,16 +24,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Light theme styles ─────────────────────────────────────────────────────────
+# ── Light theme ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Base ── */
 html, body, [data-testid="stAppViewContainer"] {
     background-color: #f7f8fc;
     color: #1a1a2e;
 }
-
-/* ── Sidebar ── */
 [data-testid="stSidebar"] {
     background-color: #ffffff;
     border-right: 1px solid #e8eaf0;
@@ -52,11 +39,8 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3,
 [data-testid="stSidebar"] label,
-[data-testid="stSidebar"] p {
-    color: #1a1a2e !important;
-}
+[data-testid="stSidebar"] p { color: #1a1a2e !important; }
 
-/* ── Metric cards ── */
 .metric-card {
     background: #ffffff;
     border: 1.5px solid #e8eaf0;
@@ -66,37 +50,28 @@ html, body, [data-testid="stAppViewContainer"] {
     text-align: center;
     box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
-.metric-card .value {
-    font-size: 1.8rem;
-    font-weight: 700;
-    color: #e94560;
-    line-height: 1.2;
-}
-.metric-card .label {
-    font-size: 0.75rem;
-    color: #6b7280;
-    margin-top: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
+.metric-card .value { font-size: 1.8rem; font-weight: 700; color: #e94560; line-height: 1.2; }
+.metric-card .label { font-size: 0.75rem; color: #6b7280; margin-top: 4px;
+                      text-transform: uppercase; letter-spacing: 0.04em; }
 
-/* ── Sentiment pills ── */
-.pill {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 600;
+.meta-card {
+    background: #ffffff;
+    border: 1.5px solid #e8eaf0;
+    border-left: 4px solid #e94560;
+    border-radius: 10px;
+    padding: 18px 22px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    margin-bottom: 16px;
 }
-.pill-pos { background: #d1fae5; color: #065f46; }
-.pill-neg { background: #fee2e2; color: #991b1b; }
-.pill-neu { background: #f3f4f6; color: #374151; }
+.meta-card h3 { margin: 0 0 4px 0; color: #1a1a2e; font-size: 1.1rem; }
+.meta-row { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 12px; }
+.meta-item { display: flex; flex-direction: column; }
+.meta-item .mi-label { font-size: 0.7rem; text-transform: uppercase;
+                        letter-spacing: 0.06em; color: #9ca3af; margin-bottom: 2px; }
+.meta-item .mi-value { font-size: 0.92rem; font-weight: 500; color: #1a1a2e; }
 
-/* ── Section headings ── */
-h1 { color: #1a1a2e !important; }
-h2, h3 { color: #1a1a2e !important; }
+h1, h2, h3 { color: #1a1a2e !important; }
 
-/* ── Download buttons ── */
 .stDownloadButton > button {
     border-radius: 8px !important;
     border: 1.5px solid #e94560 !important;
@@ -108,8 +83,6 @@ h2, h3 { color: #1a1a2e !important; }
     background: #e94560 !important;
     color: #fff !important;
 }
-
-/* ── Primary button ── */
 .stButton > button[kind="primary"] {
     background: #e94560 !important;
     border: none !important;
@@ -117,30 +90,15 @@ h2, h3 { color: #1a1a2e !important; }
     color: #fff !important;
     font-weight: 600 !important;
 }
-.stButton > button[kind="primary"]:hover {
-    background: #c73652 !important;
-}
+.stButton > button[kind="primary"]:hover { background: #c73652 !important; }
 
-/* ── Tabs ── */
-[data-testid="stTabs"] button {
-    color: #6b7280 !important;
-    font-weight: 500;
-}
+[data-testid="stTabs"] button { color: #6b7280 !important; font-weight: 500; }
 [data-testid="stTabs"] button[aria-selected="true"] {
     color: #e94560 !important;
     border-bottom-color: #e94560 !important;
 }
-
-/* ── Progress bar ── */
-.stProgress > div > div {
-    background-color: #e94560 !important;
-}
-
-/* ── Dataframe ── */
-[data-testid="stDataFrame"] {
-    border: 1px solid #e8eaf0;
-    border-radius: 8px;
-}
+.stProgress > div > div { background-color: #e94560 !important; }
+[data-testid="stDataFrame"] { border: 1px solid #e8eaf0; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -168,48 +126,9 @@ def fmt_time(unix_ts) -> str:
     return datetime.fromtimestamp(int(unix_ts)).strftime("%Y-%m-%d %H:%M")
 
 
-def sentiment_label(score: float) -> str:
-    if score >= 0.05:
-        return "Positive"
-    if score <= -0.05:
-        return "Negative"
-    return "Neutral"
-
-
-def extract_keywords(texts: list, top_n: int = 20) -> list:
-    stop_words: set = set()
-    try:
-        stop_words = set(stopwords.words("english"))
-    except Exception:
-        pass
-    words = []
-    for t in texts:
-        for w in re.findall(r"[a-zA-Z]{3,}", t.lower()):
-            if w not in stop_words:
-                words.append(w)
-    return Counter(words).most_common(top_n)
-
-
-def build_row_txt(c: dict) -> str:
-    """Build a plain-text export string for a single comment row."""
-    reply_lines = ""
-    for rep in c.get("replies") or []:
-        ru   = rep.get("user") or {}
-        rtxt = rep.get("text", "")
-        rl   = int(rep.get("digg_count") or 0)
-        reply_lines += f"  └ @{ru.get('unique_id', '?')}: {rtxt}  (❤ {rl})\n"
-    return (
-        f"{'═' * 45}\n"
-        f"Video ID  : {c['video_id']}\n"
-        f"Username  : @{c['username']}\n"
-        f"Posted    : {c['created_at']}\n"
-        f"Likes     : {c['likes']}\n"
-        f"Replies   : {c['reply_count']}\n"
-        f"Sentiment : {c['sentiment']} ({c['sentiment_score']:+.4f})\n"
-        f"{'─' * 45}\n"
-        f"\nComment:\n{c['text']}\n"
-        + (f"\nReplies:\n{reply_lines}" if reply_lines else "")
-    )
+def fmt_duration(seconds) -> str:
+    s = int(seconds or 0)
+    return f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
 
 
 # ── Video ID resolution ────────────────────────────────────────────────────────
@@ -220,9 +139,7 @@ def extract_video_id(value: str, headers: dict) -> str | None:
     try:
         r = requests.get(
             f"{BASE_URL}/api/v1/tiktok/web/get_aweme_id",
-            headers=headers,
-            params={"url": value},
-            timeout=20,
+            headers=headers, params={"url": value}, timeout=20,
         )
         if r.status_code == 200:
             vid = r.json().get("data", {}).get("aweme_id", "")
@@ -232,6 +149,73 @@ def extract_video_id(value: str, headers: dict) -> str | None:
         pass
     m = re.search(r"/video/(\d+)", value)
     return m.group(1) if m else None
+
+
+# ── Fetch video metadata ───────────────────────────────────────────────────────
+def fetch_video_metadata(video_id: str, headers: dict) -> dict:
+    """
+    Tries the Web endpoint first, falls back to App V3.
+    Returns a normalised metadata dict.
+    """
+    raw = None
+
+    # Attempt 1 — Web API
+    try:
+        r = requests.get(
+            f"{BASE_URL}/api/v1/tiktok/web/fetch_post_detail",
+            headers=headers, params={"aweme_id": video_id}, timeout=30,
+        )
+        if r.status_code == 200:
+            body = r.json().get("data") or {}
+            raw  = body.get("aweme_detail") or body.get("item_info", {}).get("itemStruct") or body
+    except Exception:
+        pass
+
+    # Attempt 2 — App V3
+    if not raw:
+        try:
+            r = requests.get(
+                f"{BASE_URL}/api/v1/tiktok/app/v3/fetch_one_video",
+                headers=headers, params={"aweme_id": video_id}, timeout=30,
+            )
+            if r.status_code == 200:
+                body = r.json().get("data") or {}
+                raw  = body.get("aweme_detail") or body
+        except Exception:
+            pass
+
+    if not raw:
+        return {}
+
+    author      = raw.get("author") or raw.get("authorMeta") or {}
+    stats       = raw.get("statistics") or raw.get("stats") or {}
+    music       = raw.get("music") or raw.get("musicMeta") or {}
+    video_info  = raw.get("video") or {}
+    created_ts  = raw.get("create_time") or raw.get("createTime") or 0
+
+    return {
+        "video_id":       video_id,
+        "title":          raw.get("desc") or raw.get("text") or "",
+        "author":         author.get("unique_id") or author.get("uniqueId") or author.get("nickname", ""),
+        "author_name":    author.get("nickname") or "",
+        "author_fans":    author.get("follower_count") or author.get("fans") or 0,
+        "author_verified":author.get("custom_verify") or author.get("verified") or False,
+        "created_at":     fmt_time(created_ts),
+        "duration":       fmt_duration(video_info.get("duration") or raw.get("duration") or 0),
+        "views":          stats.get("play_count")    or stats.get("playCount")    or 0,
+        "likes":          stats.get("digg_count")    or stats.get("diggCount")    or 0,
+        "comments_count": stats.get("comment_count") or stats.get("commentCount") or 0,
+        "shares":         stats.get("share_count")   or stats.get("shareCount")   or 0,
+        "bookmarks":      stats.get("collect_count") or stats.get("collectCount") or 0,
+        "music_title":    music.get("title") or music.get("musicName") or "",
+        "music_author":   music.get("author") or music.get("authorName") or "",
+        "hashtags":       ", ".join(
+            f"#{t.get('hashtagName') or t.get('title', '')}"
+            for t in (raw.get("text_extra") or raw.get("challenges") or [])
+            if (t.get("hashtagName") or t.get("title"))
+        ),
+        "url":            f"https://www.tiktok.com/@{author.get('unique_id','')}/video/{video_id}",
+    }
 
 
 # ── Fetch comments ─────────────────────────────────────────────────────────────
@@ -293,26 +277,22 @@ def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> N
 
 
 # ── Parse comment ──────────────────────────────────────────────────────────────
-def parse_comment(c: dict, video_id: str, sia=None) -> dict:
-    user  = c.get("user") or {}
-    text  = c.get("text") or c.get("comment_text", "")
-    score = sia.polarity_scores(text)["compound"] if (sia and text) else 0.0
+def parse_comment(c: dict, video_id: str) -> dict:
+    user = c.get("user") or {}
     return {
-        "video_id":        video_id,
-        "comment_id":      c.get("cid") or c.get("comment_id", ""),
-        "username":        user.get("unique_id") or user.get("nickname", ""),
-        "text":            text,
-        "likes":           int(c.get("digg_count") or 0),
-        "reply_count":     int(c.get("reply_comment_total") or 0),
-        "created_at":      fmt_time(c.get("create_time") or c.get("created_at")),
-        "sentiment_score": round(score, 4),
-        "sentiment":       sentiment_label(score),
-        "replies":         [],
+        "video_id":    video_id,
+        "comment_id":  c.get("cid") or c.get("comment_id", ""),
+        "username":    user.get("unique_id") or user.get("nickname", ""),
+        "text":        c.get("text") or c.get("comment_text", ""),
+        "likes":       int(c.get("digg_count") or 0),
+        "reply_count": int(c.get("reply_comment_total") or 0),
+        "created_at":  fmt_time(c.get("create_time") or c.get("created_at")),
+        "replies":     [],
     }
 
 
 # ── XLSX export ────────────────────────────────────────────────────────────────
-def build_xlsx(all_parsed: list) -> bytes:
+def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
     wb = openpyxl.Workbook()
 
     hdr_font = Font(bold=True, color="FFFFFF", size=11)
@@ -323,9 +303,7 @@ def build_xlsx(all_parsed: list) -> bytes:
         left=Side(style="thin"), right=Side(style="thin"),
         top=Side(style="thin"),  bottom=Side(style="thin"),
     )
-    pos_fill = PatternFill("solid", fgColor="D1FAE5")
-    neg_fill = PatternFill("solid", fgColor="FEE2E2")
-    neu_fill = PatternFill("solid", fgColor="F9FAFB")
+    alt_fill = PatternFill("solid", fgColor="FFF5F7")
 
     def style_header(ws, headers, widths):
         for ci, (h, w) in enumerate(zip(headers, widths), 1):
@@ -336,79 +314,87 @@ def build_xlsx(all_parsed: list) -> bytes:
         ws.row_dimensions[1].height = 22
         ws.freeze_panes = "A2"
 
-    # Sheet 1 — Comments
-    ws1 = wb.active
-    ws1.title = "Comments"
+    # Sheet 1 — Video Metadata
+    ws0 = wb.active
+    ws0.title = "Video Metadata"
+    meta_headers = ["Video ID", "Title", "Author", "Display Name",
+                    "Posted At", "Duration", "Views", "Likes",
+                    "Comments", "Shares", "Bookmarks",
+                    "Music", "Music Author", "Hashtags", "URL"]
+    meta_widths  = [22, 50, 20, 25, 18, 10, 14, 14, 12, 12, 12, 30, 25, 40, 50]
+    style_header(ws0, meta_headers, meta_widths)
+    for ri, (vid, m) in enumerate(all_metadata.items(), 2):
+        vals = [
+            m.get("video_id",""), m.get("title",""), m.get("author",""),
+            m.get("author_name",""), m.get("created_at",""), m.get("duration",""),
+            m.get("views",0), m.get("likes",0), m.get("comments_count",0),
+            m.get("shares",0), m.get("bookmarks",0),
+            m.get("music_title",""), m.get("music_author",""),
+            m.get("hashtags",""), m.get("url",""),
+        ]
+        for ci, val in enumerate(vals, 1):
+            cell = ws0.cell(row=ri, column=ci, value=val)
+            cell.alignment = left if ci in (2, 14, 15) else center
+            cell.border = thin
+        ws0.row_dimensions[ri].height = 32
+
+    # Sheet 2 — Comments
+    ws1 = wb.create_sheet("Comments")
     style_header(ws1,
-        ["#", "Video ID", "Username", "Comment",
-         "Likes", "Replies", "Sentiment", "Score", "Posted At"],
-        [5, 22, 20, 60, 10, 10, 12, 10, 18])
+        ["#", "Video ID", "Username", "Comment", "Likes", "Replies", "Posted At"],
+        [5, 22, 20, 65, 10, 10, 18])
     for i, c in enumerate(all_parsed, 1):
-        fill = {"Positive": pos_fill, "Negative": neg_fill}.get(c["sentiment"], neu_fill)
-        row  = [i, c["video_id"], c["username"], c["text"],
-                c["likes"], c["reply_count"], c["sentiment"],
-                c["sentiment_score"], c["created_at"]]
+        row = [i, c["video_id"], c["username"], c["text"],
+               c["likes"], c["reply_count"], c["created_at"]]
+        fill = alt_fill if i % 2 == 0 else None
         for ci, val in enumerate(row, 1):
             cell = ws1.cell(row=i + 1, column=ci, value=val)
             cell.alignment = left if ci == 4 else center
             cell.border = thin
-            if ci == 7:
+            if fill:
                 cell.fill = fill
         ws1.row_dimensions[i + 1].height = 42
 
-    # Sheet 2 — Replies
+    # Sheet 3 — Replies
     ws2 = wb.create_sheet("Replies")
     style_header(ws2,
         ["Comment ID", "Video ID", "Commenter", "Original Comment",
-         "Reply By", "Reply Text", "Reply Likes", "Sentiment", "Score"],
-        [22, 20, 20, 45, 20, 50, 12, 12, 10])
-    _sia = None
-    try:
-        _sia = SentimentIntensityAnalyzer()
-    except Exception:
-        pass
+         "Reply By", "Reply Text", "Reply Likes"],
+        [22, 20, 20, 45, 20, 55, 12])
     row_idx = 2
     for c in all_parsed:
         for rep in c.get("replies") or []:
             ru   = rep.get("user") or {}
-            rtxt = rep.get("text", "")
-            rs   = round(_sia.polarity_scores(rtxt)["compound"], 4) if (_sia and rtxt) else 0.0
-            rl   = sentiment_label(rs)
-            fill = {"Positive": pos_fill, "Negative": neg_fill}.get(rl, neu_fill)
             vals = [c["comment_id"], c["video_id"], c["username"], c["text"],
-                    ru.get("unique_id", ""), rtxt,
-                    int(rep.get("digg_count") or 0), rl, rs]
+                    ru.get("unique_id", ""), rep.get("text", ""),
+                    int(rep.get("digg_count") or 0)]
             for ci, val in enumerate(vals, 1):
                 cell = ws2.cell(row=row_idx, column=ci, value=val)
                 cell.alignment = left if ci in (4, 6) else center
                 cell.border = thin
-                if ci == 8:
-                    cell.fill = fill
             ws2.row_dimensions[row_idx].height = 42
             row_idx += 1
     if row_idx == 2:
         ws2.cell(row=2, column=1, value="No replies fetched.").alignment = center
 
-    # Sheet 3 — Summary
+    # Sheet 4 — Summary
     ws3 = wb.create_sheet("Summary")
     style_header(ws3,
-        ["Video ID", "Comments", "Total Likes",
-         "Positive %", "Negative %", "Neutral %",
-         "Avg Sentiment", "Top Commenter"],
-        [22, 12, 14, 14, 14, 14, 16, 25])
+        ["Video ID", "Title", "Author", "Comments Scraped",
+         "Total Likes", "Total Replies", "Top Commenter"],
+        [22, 45, 20, 16, 14, 14, 25])
     for ri, vid in enumerate(dict.fromkeys(c["video_id"] for c in all_parsed), 2):
         grp   = [c for c in all_parsed if c["video_id"] == vid]
-        n     = len(grp)
-        pos   = round(sum(1 for c in grp if c["sentiment"] == "Positive") / n * 100, 1)
-        neg   = round(sum(1 for c in grp if c["sentiment"] == "Negative") / n * 100, 1)
-        avg_s = round(sum(c["sentiment_score"] for c in grp) / n, 4)
+        m     = all_metadata.get(vid, {})
         top_u = Counter(c["username"] for c in grp).most_common(1)
-        vals  = [vid, n, sum(c["likes"] for c in grp),
-                 pos, neg, round(100 - pos - neg, 1),
-                 avg_s, top_u[0][0] if top_u else ""]
+        vals  = [vid, m.get("title","")[:80], m.get("author",""),
+                 len(grp), sum(c["likes"] for c in grp),
+                 sum(c["reply_count"] for c in grp),
+                 top_u[0][0] if top_u else ""]
         for ci, val in enumerate(vals, 1):
             cell = ws3.cell(row=ri, column=ci, value=val)
-            cell.alignment = center; cell.border = thin
+            cell.alignment = left if ci == 2 else center
+            cell.border = thin
         ws3.row_dimensions[ri].height = 22
 
     buf = io.BytesIO()
@@ -425,7 +411,6 @@ st.caption("Powered by [TikHub API](https://tikhub.io)")
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Settings")
-
     api_key = st.text_input(
         "🔑 TikHub API Key",
         type="password",
@@ -475,36 +460,71 @@ if run_btn:
         st.error("Enter at least one video ID or URL above.")
         st.stop()
 
-    headers:    dict = make_headers(api_key)
-    all_parsed: list = []
-    ts_str           = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    sia = None
-    try:
-        sia = SentimentIntensityAnalyzer()
-    except Exception:
-        pass
+    headers:      dict = make_headers(api_key)
+    all_parsed:   list = []
+    all_metadata: dict = {}   # keyed by video_id
+    ts_str             = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     for idx, line in enumerate(lines):
         st.markdown(f"---\n### 🎬 Video {idx + 1} of {len(lines)}")
         st.code(line, language=None)
 
-        # Resolve video ID
+        # ── Resolve ID ────────────────────────────────────────────────────────
         with st.spinner("Resolving video ID…"):
             video_id = extract_video_id(line, headers)
         if not video_id:
             st.error("Could not resolve a video ID from the input above.")
             continue
-        st.caption(f"Resolved video ID: **{video_id}**")
+        st.caption(f"Video ID: **{video_id}**")
 
-        # Step 1 — comments
+        # ── Fetch metadata ────────────────────────────────────────────────────
+        with st.spinner("Fetching video metadata…"):
+            meta = fetch_video_metadata(video_id, headers)
+        all_metadata[video_id] = meta
+
+        if meta:
+            verified = " ✅" if meta.get("author_verified") else ""
+            st.markdown(
+                f'<div class="meta-card">'
+                f'<h3>{meta.get("title","(no title)") or "(no title)"}</h3>'
+                f'<div class="meta-row">'
+                f'<div class="meta-item"><span class="mi-label">Author</span>'
+                f'<span class="mi-value">@{meta.get("author","")}{verified}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Display name</span>'
+                f'<span class="mi-value">{meta.get("author_name","")}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Posted</span>'
+                f'<span class="mi-value">{meta.get("created_at","")}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Duration</span>'
+                f'<span class="mi-value">{meta.get("duration","")}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Views</span>'
+                f'<span class="mi-value">{fmt_num(meta.get("views",0))}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Likes</span>'
+                f'<span class="mi-value">{fmt_num(meta.get("likes",0))}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Comments</span>'
+                f'<span class="mi-value">{fmt_num(meta.get("comments_count",0))}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Shares</span>'
+                f'<span class="mi-value">{fmt_num(meta.get("shares",0))}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Bookmarks</span>'
+                f'<span class="mi-value">{fmt_num(meta.get("bookmarks",0))}</span></div>'
+                f'<div class="meta-item"><span class="mi-label">Music</span>'
+                f'<span class="mi-value">{meta.get("music_title","") or "—"}</span></div>'
+                f'</div>'
+                + (f'<div style="margin-top:10px;font-size:0.82rem;color:#6b7280;">'
+                   f'🏷 {meta.get("hashtags","")}</div>' if meta.get("hashtags") else "")
+                + f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Metadata could not be fetched for this video.")
+
+        # ── Fetch comments ────────────────────────────────────────────────────
         st.markdown("**Step 1 of 2 — Fetching comments**")
         prog1 = st.progress(0.0)
         raw   = fetch_comments(video_id, num_comments, headers,
                                progress_cb=lambda p: prog1.progress(p))
         prog1.progress(1.0, text=f"✅ {len(raw)} comments fetched")
 
-        parsed = [parse_comment(c, video_id, sia) for c in raw]
+        parsed = [parse_comment(c, video_id) for c in raw]
 
         # Filters
         filtered = parsed
@@ -514,7 +534,7 @@ if run_btn:
             kw = keyword_filter.strip().lower()
             filtered = [c for c in filtered if kw in c["text"].lower()]
 
-        # Step 2 — replies
+        # ── Fetch replies ─────────────────────────────────────────────────────
         eligible = [c for c in filtered if c["reply_count"] > 0]
         if eligible:
             st.markdown(f"**Step 2 of 2 — Fetching replies** ({len(eligible)} comment(s) have replies)")
@@ -528,23 +548,17 @@ if run_btn:
 
         all_parsed.extend(filtered)
 
-        # Metrics
+        # ── Metrics ───────────────────────────────────────────────────────────
         n           = max(len(filtered), 1)
         total_likes = sum(c["likes"] for c in filtered)
-        pos_pct     = round(sum(1 for c in filtered if c["sentiment"] == "Positive") / n * 100)
-        neg_pct     = round(sum(1 for c in filtered if c["sentiment"] == "Negative") / n * 100)
-        neu_pct     = 100 - pos_pct - neg_pct
         tot_rep     = sum(len(c["replies"]) for c in filtered)
 
         st.write("")
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1, m2, m3 = st.columns(3)
         for col, val, label in [
-            (m1, len(filtered),        "Comments"),
-            (m2, fmt_num(total_likes), "Total ❤"),
-            (m3, tot_rep,              "Replies"),
-            (m4, f"{pos_pct}%",        "😊 Positive"),
-            (m5, f"{neg_pct}%",        "😠 Negative"),
-            (m6, f"{neu_pct}%",        "😐 Neutral"),
+            (m1, len(filtered),        "Comments Scraped"),
+            (m2, fmt_num(total_likes), "Total ❤ on Comments"),
+            (m3, tot_rep,              "Replies Fetched"),
         ]:
             col.markdown(
                 f'<div class="metric-card">'
@@ -556,26 +570,20 @@ if run_btn:
         st.write("")
 
         # ── Tabs ──────────────────────────────────────────────────────────────
-        tab1, tab2, tab3 = st.tabs(
-            ["📊 Data Preview", "🔑 Top Keywords", "📈 Sentiment"]
-        )
+        tab1, tab2 = st.tabs(["💬 Comments", "🔑 Top Keywords"])
 
         with tab1:
-            # Build display dataframe
             df = pd.DataFrame([
                 {
-                    "#":          i + 1,
-                    "Username":   c["username"],
-                    "Comment":    c["text"],
-                    "Likes":      c["likes"],
-                    "Replies":    c["reply_count"],
-                    "Sentiment":  c["sentiment"],
-                    "Score":      c["sentiment_score"],
-                    "Posted At":  c["created_at"],
+                    "#":         i + 1,
+                    "Username":  c["username"],
+                    "Comment":   c["text"],
+                    "Likes":     c["likes"],
+                    "Replies":   c["reply_count"],
+                    "Posted At": c["created_at"],
                 }
                 for i, c in enumerate(filtered)
             ])
-
             st.dataframe(
                 df,
                 use_container_width=True,
@@ -586,32 +594,24 @@ if run_btn:
                     "Comment":   st.column_config.TextColumn(width="large"),
                     "Likes":     st.column_config.NumberColumn(width="small", format="%d"),
                     "Replies":   st.column_config.NumberColumn(width="small", format="%d"),
-                    "Sentiment": st.column_config.TextColumn(width="small"),
-                    "Score":     st.column_config.NumberColumn(width="small", format="%.4f"),
                     "Posted At": st.column_config.TextColumn(width="medium"),
                 },
             )
 
-            # Per-row TXT download buttons
-            st.markdown("#### 📄 Export Individual Comments as TXT")
-            st.caption("Each file includes the comment text, metadata, and any fetched replies.")
-
-            btn_cols = st.columns(4)
-            for ci, c in enumerate(filtered):
-                safe_user  = re.sub(r"[^\w]", "_", c["username"])[:20]
-                fname      = f"comment_{safe_user}_{ci + 1}.txt"
-                txt_data   = build_row_txt(c).encode("utf-8")
-                btn_cols[ci % 4].download_button(
-                    label=f"@{c['username'][:14]}",
-                    data=txt_data,
-                    file_name=fname,
-                    mime="text/plain",
-                    key=f"txt_{video_id}_{ci}",
-                    use_container_width=True,
-                )
-
         with tab2:
-            kws = extract_keywords([c["text"] for c in filtered], top_n=20)
+            from collections import Counter as _Counter
+            import re as _re
+            try:
+                from nltk.corpus import stopwords as _sw
+                stop_words = set(_sw.words("english"))
+            except Exception:
+                stop_words = set()
+            words = []
+            for c in filtered:
+                for w in _re.findall(r"[a-zA-Z]{3,}", c["text"].lower()):
+                    if w not in stop_words:
+                        words.append(w)
+            kws = _Counter(words).most_common(20)
             if kws:
                 kw_cols = st.columns(4)
                 for i, (word, freq) in enumerate(kws):
@@ -619,47 +619,18 @@ if run_btn:
             else:
                 st.info("Not enough text to extract keywords.")
 
-        with tab3:
-            pos = sum(1 for c in filtered if c["sentiment"] == "Positive")
-            neg = sum(1 for c in filtered if c["sentiment"] == "Negative")
-            neu = len(filtered) - pos - neg
-            st.bar_chart({"Positive": pos, "Negative": neg, "Neutral": neu},
-                         color=["#10b981", "#ef4444", "#9ca3af"])
-            avg_s = sum(c["sentiment_score"] for c in filtered) / n
-            st.metric("Average sentiment score", f"{avg_s:.4f}",
-                      help="+1.0 = very positive · −1.0 = very negative")
-
     # ── Global export ──────────────────────────────────────────────────────────
     if all_parsed:
         st.markdown("---")
-        st.subheader("📤 Export All Videos")
-
-        ecol1, ecol2 = st.columns(2)
-
-        with ecol1:
-            with st.spinner("Building XLSX…"):
-                xlsx_bytes = build_xlsx(all_parsed)
-            fname_xlsx = f"tiktok_comments_{ts_str}.xlsx"
-            st.download_button(
-                label=f"⬇  Download XLSX — {len(all_parsed)} comments · 3 sheets",
-                data=xlsx_bytes,
-                file_name=fname_xlsx,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-            st.caption(f"`{fname_xlsx}` · Comments · Replies · Summary")
-
-        with ecol2:
-            txt_lines = []
-            for i, c in enumerate(all_parsed, 1):
-                txt_lines.append(build_row_txt(c))
-            bulk_txt   = "\n".join(txt_lines)
-            fname_txt  = f"tiktok_comments_{ts_str}.txt"
-            st.download_button(
-                label=f"⬇  Download All as TXT — {len(all_parsed)} comments",
-                data=bulk_txt.encode("utf-8"),
-                file_name=fname_txt,
-                mime="text/plain",
-                use_container_width=True,
-            )
-            st.caption(f"`{fname_txt}` · All comments + replies in plain text")
+        st.subheader("📤 Export")
+        with st.spinner("Building XLSX…"):
+            xlsx_bytes = build_xlsx(all_parsed, all_metadata)
+        fname_xlsx = f"tiktok_comments_{ts_str}.xlsx"
+        st.download_button(
+            label=f"⬇  Download XLSX — {len(all_parsed)} comments · 4 sheets",
+            data=xlsx_bytes,
+            file_name=fname_xlsx,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+        st.caption(f"`{fname_xlsx}` · **Video Metadata** · Comments · Replies · Summary")
