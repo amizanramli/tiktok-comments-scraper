@@ -232,76 +232,6 @@ def fetch_comments(video_id: str, target: int, headers: dict,
     return comments[:target]
 
 
-# ── Fetch replies — strictly per the API spec ──────────────────────────────────
-def fetch_replies_for_comment(item_id: str, comment_id: str,
-                               headers: dict) -> list:
-    """Paginate through replies for one comment; stops early on stop/error."""
-    all_replies = []
-    cursor      = 0
-
-    while True:
-        if is_stopped():
-            break
-
-        params = {
-            "item_id":        item_id,
-            "comment_id":     comment_id,
-            "cursor":         cursor,
-            "count":          20,
-            "current_region": "",
-        }
-        try:
-            r = requests.get(
-                f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
-                headers=headers, params=params, timeout=30,
-            )
-        except Exception:
-            break
-
-        if r.status_code != 200:
-            break
-
-        data     = r.json().get("data") or {}
-        batch    = data.get("comments") or []
-        has_more = bool(data.get("has_more", False))
-        cursor   = data.get("cursor", cursor + len(batch))
-
-        if batch:
-            all_replies.extend(batch)
-
-        if not has_more or not batch:
-            break
-
-        time.sleep(0.25)
-
-    return all_replies
-
-
-def fetch_all_replies(item_id: str, parsed_comments: list,
-                      headers: dict, progress_cb=None) -> None:
-    """Attach replies to every comment that has reply_count > 0.
-    Stops early if stop is requested; keeps whatever was already fetched."""
-    eligible = [c for c in parsed_comments
-                if c["reply_count"] > 0 and c["comment_id"]]
-    total    = len(eligible)
-
-    no_id = [c for c in parsed_comments
-             if c["reply_count"] > 0 and not c["comment_id"]]
-    if no_id:
-        st.warning(f"⚠️ {len(no_id)} comment(s) have replies but no ID — skipped.")
-
-    for i, c in enumerate(eligible):
-        if is_stopped():
-            break
-        try:
-            c["replies"] = fetch_replies_for_comment(item_id, c["comment_id"], headers)
-        except Exception as e:
-            st.warning(f"⚠️ Error fetching replies for comment {c['comment_id']}: {e}. Skipping.")
-            c["replies"] = []
-        if progress_cb and total > 0:
-            progress_cb((i + 1) / total)
-        time.sleep(0.25)
-
 
 # ── Parse raw comment dict ─────────────────────────────────────────────────────
 def parse_comment(raw: dict, video_id: str) -> dict:
@@ -313,19 +243,9 @@ def parse_comment(raw: dict, video_id: str) -> dict:
         "username":    user.get("unique_id") or user.get("nickname") or "",
         "text":        raw.get("text") or raw.get("comment_text") or "",
         "likes":       int(raw.get("digg_count") or 0),
-        "reply_count": int(raw.get("reply_comment_total") or 0),
         "created_at":  fmt_time(raw.get("create_time") or raw.get("created_at")),
-        "replies":     [],
     }
 
-
-def parse_reply(raw: dict) -> dict:
-    user = raw.get("user") or {}
-    return {
-        "username": user.get("unique_id") or user.get("nickname") or "",
-        "text":     raw.get("text") or raw.get("comment_text") or "",
-        "likes":    int(raw.get("digg_count") or 0),
-    }
 
 
 # ── XLSX ───────────────────────────────────────────────────────────────────────
@@ -339,7 +259,6 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
     thin      = Border(left=Side(style="thin"), right=Side(style="thin"),
                        top=Side(style="thin"),  bottom=Side(style="thin"))
     alt_fill  = PatternFill("solid", fgColor="FFF5F7")
-    rep_fill  = PatternFill("solid", fgColor="FFF0F3")
 
     def style_header(ws, hdrs, widths):
         for ci, (h, w) in enumerate(zip(hdrs, widths), 1):
@@ -371,54 +290,36 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
             cell.border = thin
         ws0.row_dimensions[ri].height = 32
 
-    # ── Sheet 2 : Comments & Replies (flat) ────────────────────────────────────
-    ws1 = wb.create_sheet("Comments & Replies")
+    # ── Sheet 2 : Comments ────────────────────────────────────────────────────
+    ws1 = wb.create_sheet("Comments")
     style_header(ws1,
-        ["#","Video ID","Type","Parent Username","Username","Text","Likes","Posted At"],
-        [5, 22,         12,    22,               22,        65,    10,     18])
+        ["#","Video ID","Username","Text","Likes","Posted At"],
+        [5, 22,         22,        65,    10,     18])
 
-    row_num  = 0
     xlsx_row = 2
 
-    for c in all_parsed:
-        row_num += 1
+    for row_num, c in enumerate(all_parsed, 1):
         fill = alt_fill if row_num % 2 == 0 else None
-
-        vals = [row_num, c["video_id"], "Comment", "",
-                c["username"], c["text"], c["likes"], c["created_at"]]
+        vals = [row_num, c["video_id"], c["username"], c["text"], c["likes"], c["created_at"]]
         for ci, val in enumerate(vals, 1):
             cell = ws1.cell(row=xlsx_row, column=ci, value=val)
-            cell.alignment = left if ci == 6 else center
+            cell.alignment = left if ci == 4 else center
             cell.border = thin
             if fill: cell.fill = fill
         ws1.row_dimensions[xlsx_row].height = 42
         xlsx_row += 1
 
-        for rep_raw in c.get("replies") or []:
-            row_num += 1
-            rep = parse_reply(rep_raw)
-            vals = [row_num, c["video_id"], "Reply", c["username"],
-                    rep["username"], rep["text"], rep["likes"], ""]
-            for ci, val in enumerate(vals, 1):
-                cell = ws1.cell(row=xlsx_row, column=ci, value=val)
-                cell.fill      = rep_fill
-                cell.border    = thin
-                cell.alignment = left if ci == 6 else center
-            ws1.row_dimensions[xlsx_row].height = 42
-            xlsx_row += 1
-
     # ── Sheet 3 : Summary ──────────────────────────────────────────────────────
     ws2 = wb.create_sheet("Summary")
     style_header(ws2,
-        ["Video ID","Title","Author","Comments","Total Likes","Total Replies","Top Commenter"],
-        [22,45,20,12,14,14,25])
+        ["Video ID","Title","Author","Comments","Total Likes","Top Commenter"],
+        [22,45,20,12,14,25])
     for ri, vid in enumerate(dict.fromkeys(c["video_id"] for c in all_parsed), 2):
         grp   = [c for c in all_parsed if c["video_id"] == vid]
         m     = all_metadata.get(vid, {})
         top_u = Counter(c["username"] for c in grp).most_common(1)
         vals  = [vid, (m.get("title","") or "")[:80], m.get("author",""),
                  len(grp), sum(c["likes"] for c in grp),
-                 sum(len(c.get("replies") or []) for c in grp),
                  top_u[0][0] if top_u else ""]
         for ci, val in enumerate(vals, 1):
             cell = ws2.cell(row=ri, column=ci, value=val)
@@ -448,13 +349,13 @@ def render_export(all_parsed: list, all_metadata: dict, ts_str: str,
         xlsx_bytes = build_xlsx(all_parsed, all_metadata)
     fname = f"tiktok_comments_{ts_str}.xlsx"
     st.download_button(
-        label=f"⬇  Download XLSX — {len(all_parsed)} rows · 3 sheets",
+        label=f"⬇  Download XLSX — {len(all_parsed)} comments · 3 sheets",
         data=xlsx_bytes,
         file_name=fname,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    st.caption(f"`{fname}` · Video Metadata · Comments & Replies · Summary")
+    st.caption(f"`{fname}` · Video Metadata · Comments · Summary")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -590,8 +491,8 @@ if run_btn:
             stopped_early = True
             break
 
-        # Step 1 — comments
-        st.markdown("**Step 1 of 2 — Fetching comments**")
+        # Fetching comments
+        st.markdown("**Fetching comments…**")
         prog1 = st.progress(0.0)
         try:
             raw = fetch_comments(video_id, num_comments, headers,
@@ -617,29 +518,6 @@ if run_btn:
             kw = keyword_filter.strip().lower()
             filtered = [c for c in filtered if kw in c["text"].lower()]
 
-        # ── stop check before replies ──
-        if is_stopped():
-            all_parsed.extend(filtered)
-            stopped_early = True
-            break
-
-        # Step 2 — replies
-        eligible = [c for c in filtered if c["reply_count"] > 0 and c["comment_id"]]
-        if eligible:
-            st.markdown(f"**Step 2 of 2 — Fetching replies** "
-                        f"({len(eligible)} comment(s) have replies)")
-            prog2 = st.progress(0.0)
-            try:
-                fetch_all_replies(video_id, filtered, headers,
-                                  progress_cb=lambda p: prog2.progress(p))
-            except Exception as e:
-                st.warning(f"⚠️ Replies fetch failed: {e}. Keeping comments without replies.")
-            total_replies = sum(len(c["replies"]) for c in filtered)
-            prog2.progress(1.0, text=f"✅ {total_replies} replies fetched"
-                           + (" (stopped early)" if is_stopped() else ""))
-        else:
-            st.markdown("**Step 2 of 2 — No replies for these comments**")
-
         all_parsed.extend(filtered)
 
         if is_stopped():
@@ -647,16 +525,13 @@ if run_btn:
             break
 
         # Metrics
-        n           = max(len(filtered), 1)
         total_likes = sum(c["likes"] for c in filtered)
-        tot_rep     = sum(len(c.get("replies") or []) for c in filtered)
 
         st.write("")
-        m1, m2, m3 = st.columns(3)
+        m1, m2 = st.columns(2)
         for col, val, label in [
             (m1, len(filtered),        "Comments Scraped"),
             (m2, fmt_num(total_likes), "Total ❤ on Comments"),
-            (m3, tot_rep,              "Replies Fetched"),
         ]:
             col.markdown(
                 f'<div class="metric-card">'
@@ -666,37 +541,22 @@ if run_btn:
         st.write("")
 
         # Tabs
-        tab1, tab2 = st.tabs(["💬 Comments & Replies", "🔑 Top Keywords"])
+        tab1, tab2 = st.tabs(["💬 Comments", "🔑 Top Keywords"])
 
         with tab1:
             rows = []
             for i, c in enumerate(filtered):
                 rows.append({
                     "#":       i + 1,
-                    "Type":    "Comment",
-                    "Parent":  "",
                     "Username":c["username"],
                     "Text":    c["text"],
                     "Likes":   c["likes"],
                     "Posted":  c["created_at"],
                 })
-                for rep_raw in c.get("replies") or []:
-                    rep = parse_reply(rep_raw)
-                    rows.append({
-                        "#":       "",
-                        "Type":    "↳ Reply",
-                        "Parent":  c["username"],
-                        "Username":rep["username"],
-                        "Text":    rep["text"],
-                        "Likes":   rep["likes"],
-                        "Posted":  "",
-                    })
             st.dataframe(pd.DataFrame(rows), use_container_width=True,
                          hide_index=True,
                          column_config={
                              "#":        st.column_config.TextColumn(width="small"),
-                             "Type":     st.column_config.TextColumn(width="small"),
-                             "Parent":   st.column_config.TextColumn(width="medium"),
                              "Username": st.column_config.TextColumn(width="medium"),
                              "Text":     st.column_config.TextColumn(width="large"),
                              "Likes":    st.column_config.TextColumn(width="small"),
