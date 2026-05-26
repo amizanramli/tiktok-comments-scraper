@@ -432,10 +432,17 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
         for rep in c.get("replies") or []:
             row_num += 1
             ru   = rep.get("user") or {}
-            rtxt = rep.get("text", "")
-            rl   = int(rep.get("digg_count") or 0)
+            # Try all possible text field names the API might return
+            rtxt = (
+                rep.get("text")
+                or rep.get("comment_text")
+                or rep.get("share_info", {}).get("desc")
+                or ""
+            )
+            rl   = int(rep.get("digg_count") or rep.get("like_count") or 0)
             rep_row = [row_num, c["video_id"], "Reply", c["username"],
-                       ru.get("unique_id", ""), rtxt, rl, ""]
+                       ru.get("unique_id") or ru.get("nickname") or "",
+                       rtxt, rl, ""]
             for ci, val in enumerate(rep_row, 1):
                 cell = ws1.cell(row=row_idx, column=ci, value=val)
                 cell.fill      = reply_fill
@@ -647,28 +654,53 @@ if run_btn:
         tab1, tab2 = st.tabs(["💬 Comments", "🔑 Top Keywords"])
 
         with tab1:
-            df = pd.DataFrame([
-                {
-                    "#":         i + 1,
-                    "Username":  c["username"],
-                    "Comment":   c["text"],
-                    "Likes":     c["likes"],
-                    "Replies":   c["reply_count"],
-                    "Posted At": c["created_at"],
-                }
-                for i, c in enumerate(filtered)
-            ])
+            # Build flat rows: comments + their replies
+            rows = []
+            for i, c in enumerate(filtered):
+                rows.append({
+                    "#":              i + 1,
+                    "Type":           "Comment",
+                    "Parent":         "",
+                    "Username":       c["username"],
+                    "Text":           c["text"],
+                    "Likes":          c["likes"],
+                    "Reply Count":    c["reply_count"],
+                    "Replies Fetched":len(c.get("replies") or []),
+                    "Posted At":      c["created_at"],
+                })
+                for rep in c.get("replies") or []:
+                    ru   = rep.get("user") or {}
+                    rtxt = (
+                        rep.get("text")
+                        or rep.get("comment_text")
+                        or ""
+                    )
+                    rows.append({
+                        "#":              "",
+                        "Type":           "↳ Reply",
+                        "Parent":         c["username"],
+                        "Username":       ru.get("unique_id") or ru.get("nickname") or "",
+                        "Text":           rtxt,
+                        "Likes":          int(rep.get("digg_count") or 0),
+                        "Reply Count":    "",
+                        "Replies Fetched":"",
+                        "Posted At":      "",
+                    })
+            df = pd.DataFrame(rows)
             st.dataframe(
                 df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "#":         st.column_config.NumberColumn(width="small"),
-                    "Username":  st.column_config.TextColumn(width="medium"),
-                    "Comment":   st.column_config.TextColumn(width="large"),
-                    "Likes":     st.column_config.NumberColumn(width="small", format="%d"),
-                    "Replies":   st.column_config.NumberColumn(width="small", format="%d"),
-                    "Posted At": st.column_config.TextColumn(width="medium"),
+                    "#":               st.column_config.TextColumn(width="small"),
+                    "Type":            st.column_config.TextColumn(width="small"),
+                    "Parent":          st.column_config.TextColumn(width="medium"),
+                    "Username":        st.column_config.TextColumn(width="medium"),
+                    "Text":            st.column_config.TextColumn(width="large"),
+                    "Likes":           st.column_config.TextColumn(width="small"),
+                    "Reply Count":     st.column_config.TextColumn(width="small"),
+                    "Replies Fetched": st.column_config.TextColumn(width="small"),
+                    "Posted At":       st.column_config.TextColumn(width="medium"),
                 },
             )
 
