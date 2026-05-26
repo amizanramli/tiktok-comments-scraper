@@ -255,22 +255,42 @@ def fetch_comments(video_id, target, headers, progress_cb=None) -> list:
     return comments[:target]
 
 
-# ── Fetch replies ──────────────────────────────────────────────────────────────
+# ── Fetch replies (paginated, correct param name: item_id) ────────────────────
 def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> None:
     eligible = [c for c in parsed_comments if c["reply_count"] > 0 and c["comment_id"]]
     total    = len(eligible)
     for i, c in enumerate(eligible):
-        params = {"aweme_id": video_id, "comment_id": c["comment_id"],
-                  "cursor": 0, "count": 20, "current_region": ""}
-        try:
-            r = requests.get(
-                f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
-                headers=headers, params=params, timeout=30,
-            )
-            if r.status_code == 200:
-                c["replies"] = (r.json().get("data") or {}).get("comments") or []
-        except Exception:
-            pass
+        all_replies = []
+        cursor      = 0
+        want        = c["reply_count"]          # fetch up to the known reply count
+        while len(all_replies) < want:
+            params = {
+                "item_id":       video_id,      # ← correct param per API spec
+                "comment_id":    c["comment_id"],
+                "cursor":        cursor,
+                "count":         20,
+                "current_region": "",
+            }
+            try:
+                r = requests.get(
+                    f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
+                    headers=headers, params=params, timeout=30,
+                )
+                if r.status_code != 200:
+                    break
+                data     = r.json().get("data") or {}
+                batch    = data.get("comments") or []
+                if not batch:
+                    break
+                all_replies.extend(batch)
+                cursor   = data.get("cursor", cursor + 20)
+                has_more = data.get("has_more", len(batch) == 20)
+                if not has_more:
+                    break
+                time.sleep(0.2)
+            except Exception:
+                break
+        c["replies"] = all_replies
         if progress_cb and total > 0:
             progress_cb((i + 1) / total)
         time.sleep(0.2)
