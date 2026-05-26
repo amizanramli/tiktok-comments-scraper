@@ -338,22 +338,47 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
             cell.border = thin
         ws0.row_dimensions[ri].height = 32
 
-    # Sheet 2 — Comments
+    # Sheet 2 — Comments + Replies as flat separate rows
     ws1 = wb.create_sheet("Comments")
     style_header(ws1,
-        ["#", "Video ID", "Username", "Comment", "Likes", "Replies", "Posted At"],
-        [5, 22, 20, 65, 10, 10, 18])
-    for i, c in enumerate(all_parsed, 1):
-        row = [i, c["video_id"], c["username"], c["text"],
-               c["likes"], c["reply_count"], c["created_at"]]
-        fill = alt_fill if i % 2 == 0 else None
+        ["#", "Video ID", "Type", "Parent Username", "Username",
+         "Text", "Likes", "Posted At"],
+        [5, 22, 12, 22, 22, 65, 10, 18])
+
+    reply_fill = PatternFill("solid", fgColor="FFF0F3")
+    row_idx    = 2
+    row_num    = 0
+
+    for c in all_parsed:
+        row_num += 1
+        fill = alt_fill if row_num % 2 == 0 else None
+
+        # Comment row
+        row = [row_num, c["video_id"], "Comment", "",
+               c["username"], c["text"], c["likes"], c["created_at"]]
         for ci, val in enumerate(row, 1):
-            cell = ws1.cell(row=i + 1, column=ci, value=val)
-            cell.alignment = left if ci == 4 else center
+            cell = ws1.cell(row=row_idx, column=ci, value=val)
+            cell.alignment = left if ci == 6 else center
             cell.border = thin
-            if fill:
-                cell.fill = fill
-        ws1.row_dimensions[i + 1].height = 42
+            if fill: cell.fill = fill
+        ws1.row_dimensions[row_idx].height = 42
+        row_idx += 1
+
+        # Each reply as its own flat row
+        for rep in c.get("replies") or []:
+            row_num += 1
+            ru   = rep.get("user") or {}
+            rtxt = rep.get("text", "")
+            rl   = int(rep.get("digg_count") or 0)
+            rep_row = [row_num, c["video_id"], "Reply", c["username"],
+                       ru.get("unique_id", ""), rtxt, rl, ""]
+            for ci, val in enumerate(rep_row, 1):
+                cell = ws1.cell(row=row_idx, column=ci, value=val)
+                cell.fill      = reply_fill
+                cell.border    = thin
+                cell.alignment = left if ci == 6 else center
+            ws1.row_dimensions[row_idx].height = 42
+            row_idx += 1
 
     # Sheet 3 — Replies
     ws2 = wb.create_sheet("Replies")
@@ -424,8 +449,15 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🎯 Scraping")
-    num_comments = st.slider("Comments per video", min_value=10, max_value=500,
-                             value=50, step=10)
+    num_comments = st.number_input(
+        "Max comments per video",
+        min_value=10,
+        max_value=None,
+        value=50,
+        step=10,
+        help="Enter any number — no upper limit. Large numbers will take longer.",
+    )
+    num_comments = int(num_comments)
 
     st.divider()
     st.subheader("🔍 Filters")
