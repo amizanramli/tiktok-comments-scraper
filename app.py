@@ -255,20 +255,40 @@ def fetch_comments(video_id, target, headers, progress_cb=None) -> list:
     return comments[:target]
 
 
-# ── Fetch replies (paginated, correct param name: item_id) ────────────────────
+# ── Fetch replies (paginated) ─────────────────────────────────────────────────
 def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> None:
-    eligible = [c for c in parsed_comments if c["reply_count"] > 0 and c["comment_id"]]
+    """
+    Per the TikTok Web API spec the reply endpoint accepts:
+      item_id     — the video ID
+      comment_id  — the parent comment ID
+    Both aweme_id and item_id are tried for resilience.
+    """
+    eligible = [c for c in parsed_comments if c["reply_count"] > 0]
     total    = len(eligible)
+
+    skipped = [c for c in eligible if not c["comment_id"]]
+    if skipped:
+        st.warning(
+            f"⚠️ {len(skipped)} comment(s) have replies but no comment ID could be "
+            f"resolved — their replies will be skipped. This usually means the comments "
+            f"API returned an unexpected field name for the comment ID.",
+            icon="⚠️",
+        )
+
+    eligible = [c for c in eligible if c["comment_id"]]
+
     for i, c in enumerate(eligible):
         all_replies = []
         cursor      = 0
-        want        = c["reply_count"]          # fetch up to the known reply count
+        want        = max(c["reply_count"], 1)
+
         while len(all_replies) < want:
+            # Try item_id first (per spec), fall back to aweme_id
             params = {
-                "item_id":       video_id,      # ← correct param per API spec
-                "comment_id":    c["comment_id"],
-                "cursor":        cursor,
-                "count":         20,
+                "item_id":        video_id,
+                "comment_id":     c["comment_id"],
+                "cursor":         cursor,
+                "count":          20,
                 "current_region": "",
             }
             try:
@@ -276,20 +296,35 @@ def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> N
                     f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
                     headers=headers, params=params, timeout=30,
                 )
-                if r.status_code != 200:
-                    break
-                data     = r.json().get("data") or {}
-                batch    = data.get("comments") or []
-                if not batch:
-                    break
-                all_replies.extend(batch)
-                cursor   = data.get("cursor", cursor + 20)
-                has_more = data.get("has_more", len(batch) == 20)
-                if not has_more:
+                # If item_id returns nothing, retry with aweme_id
+                if r.status_code == 200:
+                    data  = r.json().get("data") or {}
+                    batch = data.get("comments") or []
+                    if not batch:
+                        # Retry with aweme_id param name
+                        params2 = dict(params)
+                        params2.pop("item_id")
+                        params2["aweme_id"] = video_id
+                        r2 = requests.get(
+                            f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
+                            headers=headers, params=params2, timeout=30,
+                        )
+                        if r2.status_code == 200:
+                            data  = r2.json().get("data") or {}
+                            batch = data.get("comments") or []
+                    if not batch:
+                        break
+                    all_replies.extend(batch)
+                    cursor   = data.get("cursor", cursor + 20)
+                    has_more = data.get("has_more", len(batch) == 20)
+                    if not has_more:
+                        break
+                else:
                     break
                 time.sleep(0.2)
             except Exception:
                 break
+
         c["replies"] = all_replies
         if progress_cb and total > 0:
             progress_cb((i + 1) / total)
@@ -299,9 +334,15 @@ def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> N
 # ── Parse comment ──────────────────────────────────────────────────────────────
 def parse_comment(c: dict, video_id: str) -> dict:
     user = c.get("user") or {}
+    # TikTok Web API uses "cid"; App API may use "comment_id" — try all variants
+    cid = (
+        str(c.get("cid") or "").strip()
+        or str(c.get("comment_id") or "").strip()
+        or str(c.get("id") or "").strip()
+    )
     return {
         "video_id":    video_id,
-        "comment_id":  c.get("cid") or c.get("comment_id", ""),
+        "comment_id":  cid,
         "username":    user.get("unique_id") or user.get("nickname", ""),
         "text":        c.get("text") or c.get("comment_text", ""),
         "likes":       int(c.get("digg_count") or 0),
