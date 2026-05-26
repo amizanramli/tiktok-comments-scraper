@@ -280,12 +280,13 @@ def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> N
     for i, c in enumerate(eligible):
         all_replies = []
         cursor      = 0
-        want        = max(c["reply_count"], 1)
+        page        = 0
 
-        while len(all_replies) < want:
-            # Try item_id first (per spec), fall back to aweme_id
+        # Do NOT cap on reply_count — it is stale/undercounted on TikTok.
+        # Paginate purely on has_more until the API says stop.
+        while True:
             params = {
-                "item_id":        video_id,
+                "item_id":        video_id,   # per API spec
                 "comment_id":     c["comment_id"],
                 "cursor":         cursor,
                 "count":          20,
@@ -296,39 +297,41 @@ def fetch_all_replies(video_id, parsed_comments, headers, progress_cb=None) -> N
                     f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
                     headers=headers, params=params, timeout=30,
                 )
-                # If item_id returns nothing, retry with aweme_id
-                if r.status_code == 200:
-                    data  = r.json().get("data") or {}
-                    batch = data.get("comments") or []
-                    if not batch:
-                        # Retry with aweme_id param name
-                        params2 = dict(params)
-                        params2.pop("item_id")
-                        params2["aweme_id"] = video_id
-                        r2 = requests.get(
-                            f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
-                            headers=headers, params=params2, timeout=30,
-                        )
-                        if r2.status_code == 200:
-                            data  = r2.json().get("data") or {}
-                            batch = data.get("comments") or []
-                    if not batch:
-                        break
-                    all_replies.extend(batch)
-                    cursor   = data.get("cursor", cursor + 20)
-                    has_more = data.get("has_more", len(batch) == 20)
-                    if not has_more:
-                        break
-                else:
+                if r.status_code != 200:
                     break
-                time.sleep(0.2)
+                data  = r.json().get("data") or {}
+                batch = data.get("comments") or []
+
+                # If item_id yields nothing on page 0, retry once with aweme_id
+                if not batch and page == 0:
+                    p2 = {**params, "aweme_id": video_id}
+                    p2.pop("item_id", None)
+                    r2 = requests.get(
+                        f"{BASE_URL}/api/v1/tiktok/web/fetch_post_comment_reply",
+                        headers=headers, params=p2, timeout=30,
+                    )
+                    if r2.status_code == 200:
+                        data  = r2.json().get("data") or {}
+                        batch = data.get("comments") or []
+
+                if not batch:
+                    break
+
+                all_replies.extend(batch)
+                cursor   = data.get("cursor", cursor + len(batch))
+                has_more = data.get("has_more", False)
+                page    += 1
+
+                if not has_more:
+                    break
+                time.sleep(0.25)
             except Exception:
                 break
 
         c["replies"] = all_replies
         if progress_cb and total > 0:
             progress_cb((i + 1) / total)
-        time.sleep(0.2)
+        time.sleep(0.25)
 
 
 # ── Parse comment ──────────────────────────────────────────────────────────────
@@ -441,29 +444,7 @@ def build_xlsx(all_parsed: list, all_metadata: dict) -> bytes:
             ws1.row_dimensions[row_idx].height = 42
             row_idx += 1
 
-    # Sheet 3 — Replies
-    ws2 = wb.create_sheet("Replies")
-    style_header(ws2,
-        ["Comment ID", "Video ID", "Commenter", "Original Comment",
-         "Reply By", "Reply Text", "Reply Likes"],
-        [22, 20, 20, 45, 20, 55, 12])
-    row_idx = 2
-    for c in all_parsed:
-        for rep in c.get("replies") or []:
-            ru   = rep.get("user") or {}
-            vals = [c["comment_id"], c["video_id"], c["username"], c["text"],
-                    ru.get("unique_id", ""), rep.get("text", ""),
-                    int(rep.get("digg_count") or 0)]
-            for ci, val in enumerate(vals, 1):
-                cell = ws2.cell(row=row_idx, column=ci, value=val)
-                cell.alignment = left if ci in (4, 6) else center
-                cell.border = thin
-            ws2.row_dimensions[row_idx].height = 42
-            row_idx += 1
-    if row_idx == 2:
-        ws2.cell(row=2, column=1, value="No replies fetched.").alignment = center
-
-    # Sheet 4 — Summary
+    # Sheet 3 — Summary
     ws3 = wb.create_sheet("Summary")
     style_header(ws3,
         ["Video ID", "Title", "Author", "Comments Scraped",
@@ -720,10 +701,10 @@ if run_btn:
             xlsx_bytes = build_xlsx(all_parsed, all_metadata)
         fname_xlsx = f"tiktok_comments_{ts_str}.xlsx"
         st.download_button(
-            label=f"⬇  Download XLSX — {len(all_parsed)} comments · 4 sheets",
+            label=f"⬇  Download XLSX — {len(all_parsed)} rows · 3 sheets",
             data=xlsx_bytes,
             file_name=fname_xlsx,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-        st.caption(f"`{fname_xlsx}` · **Video Metadata** · Comments · Replies · Summary")
+        st.caption(f"`{fname_xlsx}` · **Video Metadata** · Comments & Replies · Summary")
